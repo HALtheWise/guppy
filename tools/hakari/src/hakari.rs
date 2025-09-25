@@ -1182,9 +1182,32 @@ impl<'g> ComputedValue<'g> {
                 let target_features = self.target_inner.keys().next().expect("1 element");
                 let host_features = self.host_inner.keys().next().expect("1 element");
                 if target_features == host_features {
-                    ValueDescribe::SingleMatchingBoth {
-                        target_inner: &self.target_inner,
-                        host_inner: &self.host_inner,
+                    // Same features, but check if workspace packages differ
+                    let target_value = self.target_inner.values().next().expect("1 element");
+                    let host_value = self.host_inner.values().next().expect("1 element");
+
+                    // Compare workspace packages (ignoring order)
+                    let target_packages: HashSet<_> = target_value
+                        .workspace_packages
+                        .iter()
+                        .map(|(pkg, features, include_dev)| (pkg.id(), features, include_dev))
+                        .collect();
+                    let host_packages: HashSet<_> = host_value
+                        .workspace_packages
+                        .iter()
+                        .map(|(pkg, features, include_dev)| (pkg.id(), features, include_dev))
+                        .collect();
+
+                    if host_packages.difference(&target_packages).count() > 0 {
+                        ValueDescribe::SingleMatchingSometimesHostOnly {
+                            target_inner: &self.target_inner,
+                            host_inner: &self.host_inner,
+                        }
+                    } else {
+                        ValueDescribe::SingleMatchingBoth {
+                            target_inner: &self.target_inner,
+                            host_inner: &self.host_inner,
+                        }
                     }
                 } else {
                     ValueDescribe::SingleNonMatchingBoth {
@@ -1222,6 +1245,10 @@ enum ValueDescribe<'g, 'a> {
         target_inner: &'a ComputedInnerMap<'g>,
         host_inner: &'a ComputedInnerMap<'g>,
     },
+    SingleMatchingSometimesHostOnly {
+        target_inner: &'a ComputedInnerMap<'g>,
+        host_inner: &'a ComputedInnerMap<'g>,
+    },
     SingleNonMatchingBoth {
         target_inner: &'a ComputedInnerMap<'g>,
         host_inner: &'a ComputedInnerMap<'g>,
@@ -1250,6 +1277,9 @@ impl<'g, 'a> ValueDescribe<'g, 'a> {
             ValueDescribe::MultiTarget(_) => "MultiTarget",
             ValueDescribe::MultiHost(_) => "MultiHost",
             ValueDescribe::SingleMatchingBoth { .. } => "SingleMatchingBoth",
+            ValueDescribe::SingleMatchingSometimesHostOnly { .. } => {
+                "SingleMatchingBothSometimesHostOnly"
+            }
             ValueDescribe::SingleNonMatchingBoth { .. } => "SingleNonMatchingBoth",
             ValueDescribe::MultiTargetSingleHost { .. } => "MultiTargetSingleHost",
             ValueDescribe::MultiHostSingleTarget { .. } => "MultiHostSingleTarget",
@@ -1299,9 +1329,41 @@ impl<'g, 'a> ValueDescribe<'g, 'a> {
                 target_inner,
                 host_inner,
             } => {
-                // Just one way to unify across both.
                 if output_single_feature {
                     insert_cb(Target, target_inner);
+                    insert_cb(Host, host_inner);
+                }
+            }
+            ValueDescribe::SingleMatchingSometimesHostOnly {
+                target_inner,
+                host_inner,
+            } => {
+                // Same feature sets and same workspace packages - truly identical.
+                // Profile contexts differ between target and host even with identical features,
+                // but Cargo has an optimization to build in just Target if both are present.
+                // To avoid rebuilds, that means we need to output to the Target list so that this
+                // optimization triggers every time.
+                println!(
+                    "SingleMatchingBothSometimesHostOnly: \ntarget: {:#?} \nhost: {:#?}",
+                    target_inner
+                        .values()
+                        .next()
+                        .unwrap()
+                        .workspace_packages
+                        .iter()
+                        .map(|(pkg, features, include_dev)| (pkg.id(), features, include_dev))
+                        .collect::<HashSet<_>>(),
+                    host_inner
+                        .values()
+                        .next()
+                        .unwrap()
+                        .workspace_packages
+                        .iter()
+                        .map(|(pkg, features, include_dev)| (pkg.id(), features, include_dev))
+                        .collect::<HashSet<_>>(),
+                );
+                insert_cb(Target, target_inner);
+                if output_single_feature {
                     insert_cb(Host, host_inner);
                 }
             }
